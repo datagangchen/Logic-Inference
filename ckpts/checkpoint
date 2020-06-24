@@ -1,0 +1,3 @@
+model_checkpoint_path: "sslgan_pre"
+all_model_checkpoint_paths: "sslgan_preD"
+all_model_checkpoint_paths: "sslgan_pre"
