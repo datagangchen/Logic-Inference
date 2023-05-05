@@ -14,7 +14,7 @@ class Tree:
 def print_tree(tree):
 	if tree is None: return
 	print_tree(tree.left)
-	print(tree.cargo['Value'], end="")
+	#print(tree.cargo['Value'], end="")
 	print_tree(tree.right)
 
 # Print the Tree structure

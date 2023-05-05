@@ -36,8 +36,8 @@ class SSLGAN(object):
                                                        20, 0.96, staircase=True)
 
         self.scope = self.D_model.feature_scope
-        self.worker_params = []
-        self.manager_params = []
+        self.policy_params = []
+        self.mapper_params = []
 
         self.epis = 0.65
         self.tem = 1.0
@@ -48,27 +48,27 @@ class SSLGAN(object):
             self.drop_out = tf.placeholder(tf.float32, name="dropout_keep_prob")
             self.train = tf.placeholder(tf.int32, None, name="train")
 
-        with tf.variable_scope('Worker'):
+        with tf.variable_scope('Policy'):
             self.g_embeddings = tf.Variable(tf.random_normal([self.vocab_size, self.emb_dim], stddev=0.1))
-            self.worker_params.append(self.g_embeddings)
-            self.g_worker_recurrent_unit = self.create_Worker_recurrent_unit(self.worker_params)  # maps h_tm1 to h_t for generator
-            self.g_worker_output_unit = self.create_Worker_output_unit(self.worker_params)  # maps h_t to o_t (output token logits)
-            self.W_workerOut_change = tf.Variable(tf.random_normal([self.vocab_size, self.goal_size], stddev=0.1))
+            self.policy_params.append(self.g_embeddings)
+            self.g_policy_recurrent_unit = self.create_Policy_recurrent_unit(self.policy_params)  # maps h_tm1 to h_t for generator
+            self.g_policy_output_unit = self.create_Policy_output_unit(self.policy_params)  # maps h_t to o_t (output token logits)
+            self.W_policyOut_change = tf.Variable(tf.random_normal([self.vocab_size, self.goal_size], stddev=0.1))
 
             self.g_change = tf.Variable(tf.random_normal([self.goal_out_size, self.goal_size], stddev=0.1))
-            self.worker_params.extend([self.W_workerOut_change,self.g_change])
+            self.policy_params.extend([self.W_policyOut_change,self.g_change])
 
-            self.h0_worker = tf.zeros([self.batch_size, self.hidden_dim])
-            self.h0_worker = tf.stack([self.h0_worker, self.h0_worker])
+            self.h0_policy = tf.zeros([self.batch_size, self.hidden_dim])
+            self.h0_policy = tf.stack([self.h0_policy, self.h0_policy])
 
-        with tf.variable_scope('Manager'):
-            self.g_manager_recurrent_unit = self.create_Manager_recurrent_unit(self.manager_params)  # maps h_tm1 to h_t for generator
-            self.g_manager_output_unit = self.create_Manager_output_unit(self.manager_params)  # maps h_t to o_t (output token logits)
-            self.h0_manager = tf.zeros([self.batch_size, self.hidden_dim])
-            self.h0_manager = tf.stack([self.h0_manager, self.h0_manager])
+        with tf.variable_scope('Mapper'):
+            self.g_mapper_recurrent_unit = self.create_Mapper_recurrent_unit(self.mapper_params)  # maps h_tm1 to h_t for generator
+            self.g_mapper_output_unit = self.create_Mapper_output_unit(self.mapper_params)  # maps h_t to o_t (output token logits)
+            self.h0_mapper = tf.zeros([self.batch_size, self.hidden_dim])
+            self.h0_mapper = tf.stack([self.h0_mapper, self.h0_mapper])
 
             self.goal_init = tf.get_variable("goal_init",initializer=tf.truncated_normal([self.batch_size,self.goal_out_size], stddev=0.1))
-            self.manager_params.extend([self.goal_init])
+            self.mapper_params.extend([self.goal_init])
 
         self.padding_array = tf.constant(-1, shape=[self.batch_size, self.sequence_length], dtype=tf.int32)
 
@@ -94,20 +94,20 @@ class SSLGAN(object):
         gen_real_goal_array = tensor_array_ops.TensorArray(dtype=tf.float32, size=self.sequence_length,
                                                        dynamic_size=False, infer_shape=True, clear_after_read=False)
 
-        gen_o_worker_array = tensor_array_ops.TensorArray(dtype=tf.float32, size=int(self.sequence_length/self.step_size),
+        gen_o_policy_array = tensor_array_ops.TensorArray(dtype=tf.float32, size=int(self.sequence_length/self.step_size),
                                                        dynamic_size=False, infer_shape=True, clear_after_read=False)
 
-        def _g_recurrence(i, x_t,h_tm1,h_tm1_manager, gen_o, gen_x,goal,last_goal,real_goal,step_size,gen_real_goal_array,gen_o_worker_array):
+        def _g_recurrence(i, x_t,h_tm1,h_tm1_mapper, gen_o, gen_x,goal,last_goal,real_goal,step_size,gen_real_goal_array,gen_o_policy_array):
             ## padding sentence by -1
             cur_sen = tf.cond(i > 0,lambda:tf.split(tf.concat([tf.transpose(gen_x.stack(), perm=[1, 0]),self.padding_array],1),[self.sequence_length,i],1)[0],lambda :self.padding_array)
             with tf.variable_scope(self.scope):
                 feature = self.FeatureExtractor_unit(cur_sen,self.drop_out)
-            h_t_Worker = self.g_worker_recurrent_unit(x_t, h_tm1)  # hidden_memory_tuple
-            o_t_Worker = self.g_worker_output_unit(h_t_Worker)  # batch x vocab , logits not prob
-            o_t_Worker = tf.reshape(o_t_Worker,[self.batch_size,self.vocab_size,self.goal_size])
+            h_t_Policy = self.g_policy_recurrent_unit(x_t, h_tm1)  # hidden_memory_tuple
+            o_t_Policy = self.g_policy_output_unit(h_t_Policy)  # batch x vocab , logits not prob
+            o_t_Policy = tf.reshape(o_t_Policy,[self.batch_size,self.vocab_size,self.goal_size])
 
-            h_t_manager = self.g_manager_recurrent_unit(feature,h_tm1_manager)
-            sub_goal = self.g_manager_output_unit(h_t_manager)
+            h_t_mapper = self.g_mapper_recurrent_unit(feature,h_tm1_mapper)
+            sub_goal = self.g_mapper_output_unit(h_t_mapper)
             sub_goal = tf.nn.l2_normalize(sub_goal, 1)
             goal = goal.write(i,sub_goal)
 
@@ -119,9 +119,9 @@ class SSLGAN(object):
 
             w_g = tf.expand_dims(w_g,2)  #batch x goal_size x 1
 
-            gen_o_worker_array = gen_o_worker_array.write(i,o_t_Worker)
+            gen_o_policy_array = gen_o_policy_array.write(i,o_t_Policy)
 
-            x_logits = tf.matmul(o_t_Worker,w_g)
+            x_logits = tf.matmul(o_t_Policy,w_g)
             x_logits = tf.squeeze(x_logits)
 
             log_prob = tf.log(tf.nn.softmax(
@@ -132,16 +132,16 @@ class SSLGAN(object):
                 gen_x = gen_x.write(i, next_token)  # indices, batch_size
             gen_o = gen_o.write(i, tf.reduce_sum(tf.multiply(tf.one_hot(next_token, self.vocab_size, 1.0, 0.0),
                                                              tf.nn.softmax(x_logits)), 1))  # [batch_size] , prob
-            return i+1,x_tp1,h_t_Worker,h_t_manager,gen_o,gen_x,goal,\
+            return i+1,x_tp1,h_t_Policy,h_t_mapper,gen_o,gen_x,goal,\
                    tf.cond(((i+1)%step_size)>0,lambda:real_sub_goal,lambda :tf.constant(0.0,shape=[self.batch_size,self.goal_out_size]))\
-                    ,tf.cond(((i+1)%step_size)>0,lambda :real_goal,lambda :real_sub_goal),step_size,gen_real_goal_array,gen_o_worker_array
+                    ,tf.cond(((i+1)%step_size)>0,lambda :real_goal,lambda :real_sub_goal),step_size,gen_real_goal_array,gen_o_policy_array
 
-        _, _, _,_, self.gen_o, self.gen_x,_,_,_,_,self.gen_real_goal_array,self.gen_o_worker_array= control_flow_ops.while_loop(
+        _, _, _,_, self.gen_o, self.gen_x,_,_,_,_,self.gen_real_goal_array,self.gen_o_policy_array= control_flow_ops.while_loop(
             cond=lambda i, _1, _2, _3, _4,_5,_6,_7,_8,_9,_10,_11: i < self.sequence_length,
             body=_g_recurrence,
             loop_vars=(tf.constant(0, dtype=tf.int32),
-                       tf.nn.embedding_lookup(self.g_embeddings, self.start_token),self.h0_worker,self.h0_manager,
-                        gen_o, gen_x,goal,tf.zeros([self.batch_size,self.goal_out_size]),self.goal_init,step_size,gen_real_goal_array,gen_o_worker_array),parallel_iterations=1)
+                       tf.nn.embedding_lookup(self.g_embeddings, self.start_token),self.h0_policy,self.h0_mapper,
+                        gen_o, gen_x,goal,tf.zeros([self.batch_size,self.goal_out_size]),self.goal_init,step_size,gen_real_goal_array,gen_o_policy_array),parallel_iterations=1)
 
         self.gen_x = self.gen_x.stack()  # seq_length x batch_size
 
@@ -151,9 +151,9 @@ class SSLGAN(object):
 
         self.gen_real_goal_array = tf.transpose(self.gen_real_goal_array, perm=[1, 0,2])  # batch_size x seq_length x goal
 
-        self.gen_o_worker_array = self.gen_o_worker_array.stack()  # seq_length x batch_size* vocab*goal
+        self.gen_o_policy_array = self.gen_o_policy_array.stack()  # seq_length x batch_size* vocab*goal
 
-        self.gen_o_worker_array = tf.transpose(self.gen_o_worker_array, perm=[1, 0,2,3])  # batch_size x seq_length * vocab*goal
+        self.gen_o_policy_array = tf.transpose(self.gen_o_policy_array, perm=[1, 0,2,3])  # batch_size x seq_length * vocab*goal
 
         sub_feature = tensor_array_ops.TensorArray(dtype=tf.float32, size=int(self.sequence_length/self.step_size),
                                                        dynamic_size=False, infer_shape=True, clear_after_read=False)
@@ -172,7 +172,7 @@ class SSLGAN(object):
         ta_emb_x = ta_emb_x.unstack(self.processed_x)
 
 
-        def preTrain(i,x_t,g_predictions,h_tm1,input_x,h_tm1_manager,last_goal,real_goal,feature_array,real_goal_array,sub_feature,all_sub_features,all_sub_goals):
+        def preTrain(i,x_t,g_predictions,h_tm1,input_x,h_tm1_mapper,last_goal,real_goal,feature_array,real_goal_array,sub_feature,all_sub_features,all_sub_goals):
             ## padding sentence by -1
             cur_sen = tf.split(tf.concat([tf.split(input_x,[i,self.sequence_length-i],1)[0],self.padding_array],1),[self.sequence_length,i],1)[0]  #padding sentence
             with tf.variable_scope(self.scope):
@@ -181,14 +181,14 @@ class SSLGAN(object):
 
             real_goal_array = tf.cond(i>0, lambda: real_goal_array,
                                        lambda: real_goal_array.write(0, self.goal_init))
-            h_t_manager = self.g_manager_recurrent_unit(feature, h_tm1_manager)
-            sub_goal = self.g_manager_output_unit(h_t_manager)
+            h_t_mapper = self.g_mapper_recurrent_unit(feature, h_tm1_mapper)
+            sub_goal = self.g_mapper_output_unit(h_t_mapper)
             sub_goal = tf.nn.l2_normalize(sub_goal, 1)
 
-            h_t_Worker = tf.cond(i>0,lambda :self.g_worker_recurrent_unit(x_t, h_tm1),
+            h_t_Policy = tf.cond(i>0,lambda :self.g_policy_recurrent_unit(x_t, h_tm1),
                                      lambda : h_tm1)# hidden_memory_tuple
-            o_t_Worker = self.g_worker_output_unit(h_t_Worker)  # batch x vocab , logits not prob
-            o_t_Worker = tf.reshape(o_t_Worker, [self.batch_size, self.vocab_size, self.goal_size])
+            o_t_Policy = self.g_policy_output_unit(h_t_Policy)  # batch x vocab , logits not prob
+            o_t_Policy = tf.reshape(o_t_Policy, [self.batch_size, self.vocab_size, self.goal_size])
 
             real_sub_goal =tf.cond(i>0,lambda :tf.add(last_goal, sub_goal),
                                        lambda :real_goal)
@@ -199,7 +199,7 @@ class SSLGAN(object):
             w_g = tf.nn.l2_normalize(w_g, 1)
             w_g = tf.expand_dims(w_g, 2)  # batch x goal_size x 1
 
-            x_logits = tf.matmul(o_t_Worker, w_g)
+            x_logits = tf.matmul(o_t_Policy, w_g)
             x_logits = tf.squeeze(x_logits)
 
             g_predictions = tf.cond(i>0,lambda :g_predictions.write(i-1, tf.nn.softmax(x_logits)),lambda :g_predictions)
@@ -225,7 +225,7 @@ class SSLGAN(object):
             x_tp1 = tf.cond(i>0,lambda :ta_emb_x.read(i-1),
                                 lambda :x_t)
 
-            return i+1, x_tp1, g_predictions, h_t_Worker, input_x, h_t_manager,\
+            return i+1, x_tp1, g_predictions, h_t_Policy, input_x, h_t_mapper,\
                    tf.cond(((i)%step_size)>0,lambda:real_sub_goal,lambda :tf.constant(0.0,shape=[self.batch_size,self.goal_out_size])) ,\
                     tf.cond(((i) % step_size) > 0, lambda: real_goal, lambda: real_sub_goal),\
                    feature_array,real_goal_array,sub_feature,all_sub_features,all_sub_goals
@@ -233,8 +233,8 @@ class SSLGAN(object):
         _, _, self.g_predictions, _,_,_,_,_, self.feature_array, self.real_goal_array,self.sub_feature,self.all_sub_features,self.all_sub_goals = control_flow_ops.while_loop(
             cond=lambda i, _1, _2, _3, _4, _5, _6,_7,_8,_9,_10,_11,_12: i < self.sequence_length+1,
             body=preTrain,
-            loop_vars=(tf.constant(0, dtype=tf.int32),tf.nn.embedding_lookup(self.g_embeddings, self.start_token),g_predictions,self.h0_worker,
-                      self.x, self.h0_manager, tf.zeros([self.batch_size, self.goal_out_size]),self.goal_init, feature_array,real_goal_array,sub_feature,all_sub_features,all_sub_goals), 
+            loop_vars=(tf.constant(0, dtype=tf.int32),tf.nn.embedding_lookup(self.g_embeddings, self.start_token),g_predictions,self.h0_policy,
+                      self.x, self.h0_mapper, tf.zeros([self.batch_size, self.goal_out_size]),self.goal_init, feature_array,real_goal_array,sub_feature,all_sub_features,all_sub_goals), 
                       parallel_iterations=1)
 
         self.sub_feature = self.sub_feature.stack() # seq_length x batch_size x num_filter
@@ -246,40 +246,41 @@ class SSLGAN(object):
         self.pretrain_goal_loss = -tf.reduce_sum(1-tf.losses.cosine_distance(tf.nn.l2_normalize(self.sub_feature,2),tf.nn.l2_normalize(self.real_goal_array,2),2)
         ) / (self.sequence_length * self.batch_size/self.step_size)
 
-        with tf.name_scope("Manager_PreTrain_update"):
-            pretrain_manager_opt = tf.train.AdamOptimizer(self.starter_learning_rate)
+        with tf.name_scope("Mapper_PreTrain_update"):
+            pretrain_mapper_opt = tf.train.AdamOptimizer(self.starter_learning_rate)
 
-            self.pretrain_manager_grad, _ = tf.clip_by_global_norm(tf.gradients(self.pretrain_goal_loss, self.manager_params), self.grad_clip)
-            self.pretrain_manager_updates = pretrain_manager_opt.apply_gradients(list(zip(self.pretrain_manager_grad, self.manager_params)),global_step=global_step_pre)
+            self.pretrain_mapper_grad, _ = tf.clip_by_global_norm(tf.gradients(self.pretrain_goal_loss, self.mapper_params), self.grad_clip)
+            self.pretrain_mapper_updates = pretrain_mapper_opt.apply_gradients(list(zip(self.pretrain_mapper_grad, self.mapper_params)),global_step=global_step_pre)
         # self.real_goal_array = self.real_goal_array.stack()
 
         self.g_predictions = tf.transpose(self.g_predictions.stack(), perm=[1, 0, 2])  # batch_size x seq_length x vocab_size
         self.cross_entropy = tf.reduce_sum(self.g_predictions * tf.log(tf.clip_by_value(self.g_predictions, 1e-20, 1.0))) / (
         self.batch_size * self.sequence_length * self.vocab_size)
 
-        self.pretrain_worker_loss = -tf.reduce_sum(
+        self.pretrain_policy_loss = -tf.reduce_sum(
             tf.one_hot(tf.to_int32(tf.reshape(self.x, [-1])), self.vocab_size, 1.0, 0.0) * tf.log(
                 tf.clip_by_value(tf.reshape(self.g_predictions, [-1, self.vocab_size]), 1e-20, 1.0)
             )
         ) / (self.sequence_length * self.batch_size)
 
-        with tf.name_scope("Worker_PreTrain_update"):
+        with tf.name_scope("Policy_PreTrain_update"):
             # training updates
-            pretrain_worker_opt = tf.train.AdamOptimizer(self.starter_learning_rate)
+            pretrain_policy_opt = tf.train.AdamOptimizer(self.starter_learning_rate)
 
-            self.pretrain_worker_grad, _ = tf.clip_by_global_norm(tf.gradients(self.pretrain_worker_loss, self.worker_params), self.grad_clip)
-            self.pretrain_worker_updates = pretrain_worker_opt.apply_gradients(list(zip(self.pretrain_worker_grad, self.worker_params)),global_step=global_step_pre)
+            self.pretrain_policy_grad, _ = tf.clip_by_global_norm(tf.gradients(self.pretrain_policy_loss, self.policy_params), self.grad_clip)
+            self.pretrain_policy_updates = pretrain_policy_opt.apply_gradients(list(zip(self.pretrain_policy_grad, self.policy_params)),global_step=global_step_pre)
 
-        self.goal_loss = -tf.reduce_sum(tf.multiply(self.reward,1-tf.losses.cosine_distance(tf.nn.l2_normalize(self.sub_feature,2), tf.nn.l2_normalize(self.real_goal_array,2), 2)
+        #self.goal_loss = -tf.reduce_sum(tf.multiply(self.reward,1-tf.losses.cosine_distance(tf.nn.l2_normalize(self.sub_feature,2), tf.nn.l2_normalize(self.real_goal_array,2), 2)
+                                                 #)) / (self.sequence_length * self.batch_size / self.step_size)
+        self.goal_loss = -tf.reduce_sum(tf.multiply(10*self.reward,1-tf.losses.cosine_distance(tf.nn.l2_normalize(self.sub_feature,2), tf.nn.l2_normalize(self.real_goal_array,2), 2)
                                                  )) / (self.sequence_length * self.batch_size / self.step_size)
+        with tf.name_scope("Mapper_update"):
+            mapper_opt = tf.train.AdamOptimizer(self.starter_learning_rate)
 
-        with tf.name_scope("Manager_update"):
-            manager_opt = tf.train.AdamOptimizer(self.starter_learning_rate)
-
-            self.manager_grad, _ = tf.clip_by_global_norm(
-                tf.gradients(self.goal_loss, self.manager_params), self.grad_clip)
-            self.manager_updates = manager_opt.apply_gradients(
-                list(zip(self.manager_grad, self.manager_params)),global_step=global_step_adv)
+            self.mapper_grad, _ = tf.clip_by_global_norm(
+                tf.gradients(self.goal_loss, self.mapper_params), self.grad_clip)
+            self.mapper_updates = mapper_opt.apply_gradients(
+                list(zip(self.mapper_grad, self.mapper_params)),global_step=global_step_adv)
 
 
         self.all_sub_features = self.all_sub_features.stack()
@@ -288,20 +289,20 @@ class SSLGAN(object):
         self.all_sub_goals = self.all_sub_goals.stack()
         self.all_sub_goals = tf.transpose(self.all_sub_goals, perm=[1, 0, 2])
         # self.all_sub_features = tf.nn.l2_normalize(self.all_sub_features, 2)
-        self.Worker_Reward = 1-tf.losses.cosine_distance(tf.nn.l2_normalize(self.all_sub_features,2), tf.nn.l2_normalize(self.all_sub_goals,2), 2)
-        # print self.Worker_Reward.shape
-        self.worker_loss = -tf.reduce_sum(
-            tf.multiply(self.Worker_Reward , tf.one_hot(tf.to_int32(tf.reshape(self.x, [-1])), self.vocab_size, 1.0, 0.0) * tf.log(
+        self.Policy_Reward = 1-tf.losses.cosine_distance(tf.nn.l2_normalize(self.all_sub_features,2), tf.nn.l2_normalize(self.all_sub_goals,2), 2)
+        # print self.Policy_Reward.shape
+        self.policy_loss = -tf.reduce_sum(
+            tf.multiply(self.Policy_Reward , tf.one_hot(tf.to_int32(tf.reshape(self.x, [-1])), self.vocab_size, 1.0, 0.0) * tf.log(
                 tf.clip_by_value(tf.reshape(self.g_predictions, [-1, self.vocab_size]), 1e-20, 1.0))
             )
         ) / (self.sequence_length * self.batch_size)
-        with tf.name_scope("Worker_update"):
+        with tf.name_scope("Policy_update"):
             # training updates
-            worker_opt = tf.train.AdamOptimizer(self.starter_learning_rate)
-            self.worker_grad, _ = tf.clip_by_global_norm(
-                tf.gradients(self.worker_loss, self.worker_params), self.grad_clip)
-            self.worker_updates = worker_opt.apply_gradients(
-                list(zip(self.worker_grad, self.worker_params)),global_step=global_step_adv)
+            policy_opt = tf.train.AdamOptimizer(self.starter_learning_rate)
+            self.policy_grad, _ = tf.clip_by_global_norm(
+                tf.gradients(self.policy_loss, self.policy_params), self.grad_clip)
+            self.policy_updates = policy_opt.apply_gradients(
+                list(zip(self.policy_grad, self.policy_params)),global_step=global_step_adv)
 
     def rollout(self,input_x,given_num):
         with tf.device("/cpu:0"):
@@ -315,17 +316,17 @@ class SSLGAN(object):
         ta_x = ta_x.unstack(tf.transpose(input_x, perm=[1, 0]))
 
         # When current index i < given_num, use the provided tokens as the input at each time step
-        def _g_recurrence_1(i, x_t,input_x,gen_x,h_tm1,h_tm1_manager,last_goal,real_goal,give_num):
+        def _g_recurrence_1(i, x_t,input_x,gen_x,h_tm1,h_tm1_mapper,last_goal,real_goal,give_num):
 
             cur_sen = tf.split(tf.concat([tf.split(input_x, [i, self.sequence_length - i], 1)[0], self.padding_array], 1),[self.sequence_length, i], 1)[0]
             with tf.variable_scope(self.scope):
                 feature = self.FeatureExtractor_unit(cur_sen,self.drop_out)
 
-            h_t_manager = self.g_manager_recurrent_unit(feature, h_tm1_manager)
-            sub_goal = self.g_manager_output_unit(h_t_manager)
+            h_t_mapper = self.g_mapper_recurrent_unit(feature, h_tm1_mapper)
+            sub_goal = self.g_mapper_output_unit(h_t_mapper)
             sub_goal = tf.nn.l2_normalize(sub_goal, 1)
 
-            h_t_Worker = tf.cond(i > 0, lambda: self.g_worker_recurrent_unit(x_t, h_tm1),
+            h_t_Policy = tf.cond(i > 0, lambda: self.g_policy_recurrent_unit(x_t, h_tm1),
                                  lambda: h_tm1)  # hidden_memory_tuple
 
             real_sub_goal = tf.cond(i > 0, lambda: tf.add(last_goal, sub_goal), lambda: real_goal)
@@ -336,27 +337,27 @@ class SSLGAN(object):
             # hidden_memory_tuple
             with tf.control_dependencies([cur_sen]):
                 gen_x = tf.cond(i > 0, lambda :gen_x.write(i-1, ta_x.read(i-1)),lambda :gen_x)
-            return i + 1, x_tp1,input_x,gen_x,h_t_Worker, h_t_manager, \
+            return i + 1, x_tp1,input_x,gen_x,h_t_Policy, h_t_mapper, \
                    tf.cond(((i) % self.step_size) > 0, lambda: real_sub_goal,
                            lambda: tf.constant(0.0, shape=[self.batch_size, self.goal_out_size])), \
                    tf.cond(((i) % self.step_size) > 0, lambda: real_goal, lambda: real_sub_goal), give_num
 
         # When current index i >= given_num, start roll-out, use the output as time step t as the input at time step t+1
-        def _g_recurrence_2(i, x_t,gen_x,h_tm1,h_tm1_manager,last_goal,real_goal):
+        def _g_recurrence_2(i, x_t,gen_x,h_tm1,h_tm1_mapper,last_goal,real_goal):
             # with tf.device('/cpu:0'):
             cur_sen = tf.cond(i > 0,lambda:tf.split(tf.concat([tf.transpose(gen_x.stack(), perm=[1, 0]),self.padding_array],1),[self.sequence_length,i-1],1)[0],lambda :self.padding_array)
             with tf.variable_scope(self.scope):
                 feature = self.FeatureExtractor_unit(cur_sen,self.drop_out)
-            h_t_Worker = self.g_worker_recurrent_unit(x_t, h_tm1)  # hidden_memory_tuple
-            o_t_Worker = self.g_worker_output_unit(h_t_Worker)  # batch x vocab , logits not prob
+            h_t_Policy = self.g_policy_recurrent_unit(x_t, h_tm1)  # hidden_memory_tuple
+            o_t_Policy = self.g_policy_output_unit(h_t_Policy)  # batch x vocab , logits not prob
 
-            o_t_Worker = tf.reshape(o_t_Worker, [self.batch_size, self.vocab_size, self.goal_size])
-            #o_t_Worker = tf.nn.softmax(o_t_Worker)
-            # o_t_Worker = tf.expand_dims(o_t_Worker,2)   # batch x vocab x 1
-            # o_t_Worker = tf.multiply(o_t_Worker,tf.nn.softmax(self.W_workerOut_change) ) #batch x vocab x goal_size
+            o_t_Policy = tf.reshape(o_t_Policy, [self.batch_size, self.vocab_size, self.goal_size])
+            #o_t_Policy = tf.nn.softmax(o_t_Policy)
+            # o_t_Policy = tf.expand_dims(o_t_Policy,2)   # batch x vocab x 1
+            # o_t_Policy = tf.multiply(o_t_Policy,tf.nn.softmax(self.W_policyOut_change) ) #batch x vocab x goal_size
 
-            h_t_manager = self.g_manager_recurrent_unit(feature,h_tm1_manager)
-            sub_goal = self.g_manager_output_unit(h_t_manager)
+            h_t_mapper = self.g_mapper_recurrent_unit(feature,h_tm1_mapper)
+            sub_goal = self.g_mapper_output_unit(h_t_mapper)
             sub_goal = tf.nn.l2_normalize(sub_goal, 1)
 
             real_sub_goal = tf.add(last_goal,sub_goal)
@@ -364,7 +365,7 @@ class SSLGAN(object):
             w_g = tf.nn.l2_normalize(w_g, 1)
             w_g = tf.expand_dims(w_g,2)  #batch x goal_size x 1
 
-            x_logits = tf.matmul(o_t_Worker,w_g)
+            x_logits = tf.matmul(o_t_Policy,w_g)
             x_logits = tf.squeeze(x_logits)
 
             log_prob = tf.log(tf.nn.softmax(x_logits))
@@ -372,21 +373,21 @@ class SSLGAN(object):
             x_tp1 = tf.nn.embedding_lookup(self.g_embeddings, next_token)  # batch x emb_dim
             with tf.control_dependencies([cur_sen]):
                 gen_x = gen_x.write(i-1, next_token)  # indices, batch_size
-            return i + 1, x_tp1, gen_x,h_t_Worker,h_t_manager,\
+            return i + 1, x_tp1, gen_x,h_t_Policy,h_t_mapper,\
                     tf.cond(((i) % self.step_size) > 0, lambda: real_sub_goal,
                                                 lambda: tf.constant(0.0, shape=[self.batch_size, self.goal_out_size])), \
                     tf.cond(((i) % self.step_size) > 0, lambda: real_goal, lambda: real_sub_goal)
 
-        i, x_t,_, gen_for_reward,h_worker, h_manager, self.last_goal_for_reward,self.real_goal_for_reward,given_num  = control_flow_ops.while_loop(
+        i, x_t,_, gen_for_reward,h_policy, h_mapper, self.last_goal_for_reward,self.real_goal_for_reward,given_num  = control_flow_ops.while_loop(
             cond=lambda i, _1, _2, _3,_4,_5,_6, _7,given_num: i < given_num+1,
             body=_g_recurrence_1,
             loop_vars=(tf.constant(0, dtype=tf.int32),tf.nn.embedding_lookup(self.g_embeddings, self.start_token),self.x,gen_for_reward,
-                       self.h0_worker,self.h0_manager,tf.zeros([self.batch_size, self.goal_out_size]),self.goal_init,given_num),parallel_iterations=1)  ##input groud-truth
+                       self.h0_policy,self.h0_mapper,tf.zeros([self.batch_size, self.goal_out_size]),self.goal_init,given_num),parallel_iterations=1)  ##input groud-truth
 
         _, _, gen_for_reward,_, _,_,_  = control_flow_ops.while_loop(
             cond=lambda i, _1, _2, _3, _4,_5,_6: i < self.sequence_length+1,
             body=_g_recurrence_2,
-            loop_vars=(i, x_t, gen_for_reward,h_worker, h_manager,self.last_goal_for_reward,self.real_goal_for_reward),parallel_iterations=1)   ## rollout by original policy
+            loop_vars=(i, x_t, gen_for_reward,h_policy, h_mapper,self.last_goal_for_reward,self.real_goal_for_reward),parallel_iterations=1)   ## rollout by original policy
 
         gen_for_reward = gen_for_reward.stack()  # seq_length x batch_size
 
@@ -399,7 +400,7 @@ class SSLGAN(object):
         self.FeatureExtractor_unit = D_model.FeatureExtractor_unit
 
     def pretrain_step(self, sess, x,dropout_keep_prob):
-        outputs = sess.run([self.pretrain_worker_updates, self.pretrain_worker_loss,self.pretrain_manager_updates,self.pretrain_goal_loss],
+        outputs = sess.run([self.pretrain_policy_updates, self.pretrain_policy_loss,self.pretrain_mapper_updates,self.pretrain_goal_loss],
                            feed_dict={self.x: x,self.drop_out:dropout_keep_prob})
         return outputs
 
@@ -407,55 +408,55 @@ class SSLGAN(object):
         outputs = sess.run(self.gen_x,feed_dict={self.drop_out:dropout_keep_prob,self.train:train})
         return outputs
 
-    def create_Worker_recurrent_unit(self, params):
-        with tf.variable_scope('Worker'):
+    def create_Policy_recurrent_unit(self, params):
+        with tf.variable_scope('Policy'):
             # Weights and Bias for input and hidden tensor
-            self.Wi_worker = tf.Variable(tf.random_normal([self.emb_dim, self.hidden_dim], stddev=0.1))
-            self.Ui_worker = tf.Variable(tf.random_normal([self.hidden_dim, self.hidden_dim], stddev=0.1))
-            self.bi_worker = tf.Variable(tf.random_normal([self.hidden_dim], stddev=0.1))
+            self.Wi_policy = tf.Variable(tf.random_normal([self.emb_dim, self.hidden_dim], stddev=0.1))
+            self.Ui_policy = tf.Variable(tf.random_normal([self.hidden_dim, self.hidden_dim], stddev=0.1))
+            self.bi_policy = tf.Variable(tf.random_normal([self.hidden_dim], stddev=0.1))
 
-            self.Wf_worker = tf.Variable(tf.random_normal([self.emb_dim, self.hidden_dim], stddev=0.1))
-            self.Uf_worker = tf.Variable(tf.random_normal([self.hidden_dim, self.hidden_dim], stddev=0.1))
-            self.bf_worker = tf.Variable(tf.random_normal([self.hidden_dim], stddev=0.1))
+            self.Wf_policy = tf.Variable(tf.random_normal([self.emb_dim, self.hidden_dim], stddev=0.1))
+            self.Uf_policy = tf.Variable(tf.random_normal([self.hidden_dim, self.hidden_dim], stddev=0.1))
+            self.bf_policy = tf.Variable(tf.random_normal([self.hidden_dim], stddev=0.1))
 
-            self.Wog_worker = tf.Variable(tf.random_normal([self.emb_dim, self.hidden_dim], stddev=0.1))
-            self.Uog_worker = tf.Variable(tf.random_normal([self.hidden_dim, self.hidden_dim], stddev=0.1))
-            self.bog_worker = tf.Variable(tf.random_normal([self.hidden_dim], stddev=0.1))
+            self.Wog_policy = tf.Variable(tf.random_normal([self.emb_dim, self.hidden_dim], stddev=0.1))
+            self.Uog_policy = tf.Variable(tf.random_normal([self.hidden_dim, self.hidden_dim], stddev=0.1))
+            self.bog_policy = tf.Variable(tf.random_normal([self.hidden_dim], stddev=0.1))
 
-            self.Wc_worker = tf.Variable(tf.random_normal([self.emb_dim, self.hidden_dim], stddev=0.1))
-            self.Uc_worker = tf.Variable(tf.random_normal([self.hidden_dim, self.hidden_dim], stddev=0.1))
-            self.bc_worker = tf.Variable(tf.random_normal([self.hidden_dim], stddev=0.1))
+            self.Wc_policy = tf.Variable(tf.random_normal([self.emb_dim, self.hidden_dim], stddev=0.1))
+            self.Uc_policy = tf.Variable(tf.random_normal([self.hidden_dim, self.hidden_dim], stddev=0.1))
+            self.bc_policy = tf.Variable(tf.random_normal([self.hidden_dim], stddev=0.1))
             params.extend([
-                self.Wi_worker, self.Ui_worker, self.bi_worker,
-                self.Wf_worker, self.Uf_worker, self.bf_worker,
-                self.Wog_worker, self.Uog_worker, self.bog_worker,
-                self.Wc_worker, self.Uc_worker, self.bc_worker])
+                self.Wi_policy, self.Ui_policy, self.bi_policy,
+                self.Wf_policy, self.Uf_policy, self.bf_policy,
+                self.Wog_policy, self.Uog_policy, self.bog_policy,
+                self.Wc_policy, self.Uc_policy, self.bc_policy])
 
             def unit(x, hidden_memory_tm1):
                 previous_hidden_state, c_prev = tf.unstack(hidden_memory_tm1)
 
                 # Input Gate
                 i = tf.sigmoid(
-                    tf.matmul(x, self.Wi_worker) +
-                    tf.matmul(previous_hidden_state, self.Ui_worker) + self.bi_worker
+                    tf.matmul(x, self.Wi_policy) +
+                    tf.matmul(previous_hidden_state, self.Ui_policy) + self.bi_policy
                 )
 
                 # Forget Gate
                 f = tf.sigmoid(
-                    tf.matmul(x, self.Wf_worker) +
-                    tf.matmul(previous_hidden_state, self.Uf_worker) + self.bf_worker
+                    tf.matmul(x, self.Wf_policy) +
+                    tf.matmul(previous_hidden_state, self.Uf_policy) + self.bf_policy
                 )
 
                 # Output Gate
                 o = tf.sigmoid(
-                    tf.matmul(x, self.Wog_worker) +
-                    tf.matmul(previous_hidden_state, self.Uog_worker) + self.bog_worker
+                    tf.matmul(x, self.Wog_policy) +
+                    tf.matmul(previous_hidden_state, self.Uog_policy) + self.bog_policy
                 )
 
                 # New Memory Cell
                 c_ = tf.nn.tanh(
-                    tf.matmul(x, self.Wc_worker) +
-                    tf.matmul(previous_hidden_state, self.Uc_worker) + self.bc_worker
+                    tf.matmul(x, self.Wc_policy) +
+                    tf.matmul(previous_hidden_state, self.Uc_policy) + self.bc_policy
                 )
 
                 # Final Memory cell
@@ -468,23 +469,23 @@ class SSLGAN(object):
 
             return unit
 
-    def create_Worker_output_unit(self, params):
-        with tf.variable_scope('Worker'):
-            self.W_worker = tf.Variable(tf.random_normal([self.hidden_dim, self.vocab_size*self.goal_size], stddev=0.1))
-            self.b_worker = tf.Variable(tf.random_normal([self.vocab_size*self.goal_size], stddev=0.1))
-            params.extend([self.W_worker, self.b_worker])
+    def create_Policy_output_unit(self, params):
+        with tf.variable_scope('Policy'):
+            self.W_policy = tf.Variable(tf.random_normal([self.hidden_dim, self.vocab_size*self.goal_size], stddev=0.1))
+            self.b_policy = tf.Variable(tf.random_normal([self.vocab_size*self.goal_size], stddev=0.1))
+            params.extend([self.W_policy, self.b_policy])
 
             def unit(hidden_memory_tuple):
                 hidden_state, c_prev = tf.unstack(hidden_memory_tuple)
                 # hidden_state : batch x hidden_dim
-                logits = tf.matmul(hidden_state, self.W_worker) + self.b_worker
+                logits = tf.matmul(hidden_state, self.W_policy) + self.b_policy
                 # output = tf.nn.softmax(logits)
                 return logits
 
             return unit
 
-    def create_Manager_recurrent_unit(self, params):
-        with tf.variable_scope('Manager'):
+    def create_Mapper_recurrent_unit(self, params):
+        with tf.variable_scope('Mapper'):
             # Weights and Bias for input and hidden tensor
             self.Wi = tf.Variable(tf.random_normal([self.num_filters_total, self.hidden_dim], stddev=0.1))
             self.Ui = tf.Variable(tf.random_normal([self.hidden_dim, self.hidden_dim], stddev=0.1))
@@ -544,8 +545,8 @@ class SSLGAN(object):
 
             return unit
 
-    def create_Manager_output_unit(self, params):
-        with tf.variable_scope('Manager'):
+    def create_Mapper_output_unit(self, params):
+        with tf.variable_scope('Mapper'):
             self.Wo = tf.Variable(tf.random_normal([self.hidden_dim, self.goal_out_size], stddev=0.1))
             self.bo = tf.Variable(tf.random_normal([self.goal_out_size], stddev=0.1))
             params.extend([self.Wo, self.bo])
